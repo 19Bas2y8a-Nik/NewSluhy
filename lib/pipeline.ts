@@ -73,3 +73,58 @@ export async function runPipeline(
     await sendMessage(token, chatId, "Произошла ошибка при обработке. Попробуйте позже.");
   }
 }
+
+/**
+ * Пайплайн для API/TMA: возвращает JSON вместо отправки в чат.
+ */
+export type PipelineApiResult =
+  | { ok: true; sources: RankedSource[] }
+  | { ok: false; error: string };
+
+export async function runPipelineForAPI(
+  rawInput: string,
+  env: PipelineEnv
+): Promise<PipelineApiResult> {
+  try {
+    const text = await getInputText(rawInput);
+    if (!text) {
+      return { ok: false, error: "Не удалось извлечь текст. Отправьте текст или ссылку на пост t.me/…" };
+    }
+
+    const query = buildSearchQueryFromText(text);
+    const apiKey = env.googleApiKey?.trim();
+    const cseId = env.googleCseId?.trim();
+    let results: SearchResult[] = [];
+    if (apiKey && cseId) {
+      results = await searchSources(query, { apiKey, cseId, maxResults: 10 });
+    }
+
+    let ranked: RankedSource[] = [];
+    const openaiKey = env.openaiApiKey?.trim();
+    if (openaiKey && results.length > 0) {
+      ranked = await rankSourcesWithAI(text, results, {
+        apiKey: openaiKey,
+        baseUrl: env.openaiBaseUrl?.trim() || undefined,
+        model: env.openaiModel?.trim() || undefined,
+      });
+    }
+    if (ranked.length === 0 && results.length > 0) {
+      ranked = results.slice(0, 3).map((r) => ({ title: r.title, link: r.link, confidence: 0 }));
+    }
+
+    if (ranked.length === 0) {
+      if (!apiKey || !cseId) {
+        return { ok: false, error: "Поиск не настроен. Добавьте GOOGLE_API_KEY и GOOGLE_CSE_ID." };
+      }
+      if (!openaiKey && results.length === 0) {
+        return { ok: false, error: "AI не настроен. Добавьте OPENAI_API_KEY для ранжирования." };
+      }
+      return { ok: false, error: "Подходящих источников не найдено. Попробуйте другой запрос." };
+    }
+
+    return { ok: true, sources: ranked };
+  } catch (e) {
+    console.error("Pipeline API error:", e);
+    return { ok: false, error: "Произошла ошибка при обработке. Попробуйте позже." };
+  }
+}
