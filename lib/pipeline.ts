@@ -1,28 +1,42 @@
 /**
- * Асинхронный пайплайн: текст → сущности → поиск → отправка результата пользователю.
- * Выполняется после быстрого ответа 200 в webhook (без AI-анализа).
+ * Пайплайн: текст → Google Search → AI-ранжирование (OpenAI gpt-4o-mini) → отправка 1–3 источников с уверенностью.
  */
 
-import { extractEntities, type ExtractedEntities } from "./entities";
 import { getInputText } from "./text";
-import { buildSearchQuery, searchSources, type SearchResult } from "./search";
+import { buildSearchQueryFromText, searchSources, type SearchResult } from "./search";
+import { rankSourcesWithAI, type RankedSource } from "./ai";
 import { sendMessage } from "./telegram";
 
-function formatResultsMessage(results: SearchResult[], hasSearch: boolean): string {
-  if (results.length === 0) {
-    return hasSearch
-      ? "По запросу ничего не найдено. Проверьте GOOGLE_API_KEY и GOOGLE_CSE_ID в настройках."
-      : "Для поиска источников настройте Google Custom Search: GOOGLE_API_KEY и GOOGLE_CSE_ID в .env";
+function formatRankedMessage(ranked: RankedSource[], hasSearch: boolean, hasAI: boolean): string {
+  if (ranked.length === 0) {
+    if (!hasSearch) {
+      return "Настройте Google Custom Search: GOOGLE_API_KEY и GOOGLE_CSE_ID в .env";
+    }
+    if (!hasAI) {
+      return "Настройте OpenAI/OpenRouter: OPENAI_API_KEY в .env для выбора лучших источников.";
+    }
+    return "Подходящих источников не найдено. Попробуйте другой запрос.";
   }
-  const lines = results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.link}`);
-  return "Возможные источники (кандидаты, без AI-ранжирования):\n\n" + lines.join("\n\n");
+  const lines = ranked.map(
+    (r, i) =>
+      `${i + 1}. ${r.title}\n   ${r.link}\n   Уверенность: ${r.confidence}%${r.reason ? ` — ${r.reason}` : ""}`
+  );
+  return "Источники (по смыслу):\n\n" + lines.join("\n\n");
+}
+
+export interface PipelineEnv {
+  googleApiKey?: string;
+  googleCseId?: string;
+  openaiApiKey?: string;
+  openaiBaseUrl?: string;
+  openaiModel?: string;
 }
 
 export async function runPipeline(
   chatId: number,
   rawInput: string,
   token: string,
-  env: { googleApiKey?: string; googleCseId?: string }
+  env: PipelineEnv
 ): Promise<void> {
   try {
     const text = await getInputText(rawInput);
@@ -31,27 +45,31 @@ export async function runPipeline(
       return;
     }
 
-    const entities = extractEntities(text);
-    const query = buildSearchQuery(entities.claims, {
-      dates: entities.dates,
-      numbers: entities.numbers,
-      names: entities.names,
-    });
-
+    const query = buildSearchQueryFromText(text);
     const apiKey = env.googleApiKey?.trim();
     const cseId = env.googleCseId?.trim();
-    const results = apiKey && cseId
-      ? await searchSources(query, { apiKey, cseId, maxResults: 8 })
-      : [];
+    let results: SearchResult[] = [];
+    if (apiKey && cseId) {
+      results = await searchSources(query, { apiKey, cseId, maxResults: 10 });
+    }
 
-    const message = formatResultsMessage(results, Boolean(apiKey && cseId));
+    let ranked: RankedSource[] = [];
+    const openaiKey = env.openaiApiKey?.trim();
+    if (openaiKey && results.length > 0) {
+      ranked = await rankSourcesWithAI(text, results, {
+        apiKey: openaiKey,
+        baseUrl: env.openaiBaseUrl?.trim() || undefined,
+        model: env.openaiModel?.trim() || undefined,
+      });
+    }
+    if (ranked.length === 0 && results.length > 0) {
+      ranked = results.slice(0, 3).map((r) => ({ title: r.title, link: r.link, confidence: 0 }));
+    }
+
+    const message = formatRankedMessage(ranked, Boolean(apiKey && cseId), Boolean(openaiKey));
     await sendMessage(token, chatId, message, { disable_web_page_preview: true });
   } catch (e) {
     console.error("Pipeline error:", e);
-    await sendMessage(
-      token,
-      chatId,
-      "Произошла ошибка при обработке. Попробуйте позже."
-    );
+    await sendMessage(token, chatId, "Произошла ошибка при обработке. Попробуйте позже.");
   }
 }

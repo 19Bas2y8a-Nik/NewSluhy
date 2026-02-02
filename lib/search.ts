@@ -1,6 +1,5 @@
 /**
  * Поиск кандидатов источников по запросу (Google Custom Search API).
- * Без AI-ранжирования — возвращаем топ N ссылок для следующего этапа.
  */
 
 export interface SearchResult {
@@ -12,18 +11,10 @@ export interface SearchResult {
 const GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1";
 
 /**
- * Собирает поисковый запрос из утверждений и сущностей (даты, числа, имена).
+ * Поисковый запрос из текста (без предварительного анализа сущностей).
  */
-export function buildSearchQuery(claims: string[], entities: { dates: string[]; numbers: string[]; names: string[] }): string {
-  const parts: string[] = [];
-  if (claims.length > 0) {
-    const firstClaim = claims[0].slice(0, 100);
-    parts.push(firstClaim);
-  }
-  if (entities.names.length > 0) parts.push(entities.names.slice(0, 3).join(" "));
-  if (entities.dates.length > 0) parts.push(entities.dates[0]);
-  if (entities.numbers.length > 0) parts.push(entities.numbers.slice(0, 2).join(" "));
-  const query = parts.join(" ").trim();
+export function buildSearchQueryFromText(text: string, maxLength = 300): string {
+  const query = text.replace(/\s+/g, " ").trim().slice(0, maxLength);
   return query || "новости";
 }
 

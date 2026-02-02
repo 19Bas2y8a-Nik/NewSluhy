@@ -66,6 +66,9 @@ export async function POST(request: NextRequest) {
   runPipeline(chatId, text, token, {
     googleApiKey: process.env.GOOGLE_API_KEY,
     googleCseId: process.env.GOOGLE_CSE_ID,
+    openaiApiKey: process.env.OPENAI_API_KEY ?? process.env.OPENROUTER_API_KEY,
+    openaiBaseUrl: process.env.OPENAI_BASE_URL,
+    openaiModel: process.env.OPENAI_MODEL,
   }).catch((err) => console.error("Webhook pipeline error:", err));
 
   return NextResponse.json({ ok: true }, { status: 200 });
